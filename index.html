@@ -271,7 +271,9 @@ function preloadRingImages() {
     img.onload = async () => {
       const { metal, gem } = await extractColors(img);
       r.metalColor = metal ?? r.fallbackMetal;
-      r.gemColor = gem ?? r.fallbackGem;
+      // If the catalog says this ring has no gem at all, never let
+      // auto-extraction invent one from a stray dark/shadow pixel.
+      r.gemColor = (r.fallbackGem === null) ? null : (gem ?? r.fallbackGem);
       if (i === selected) rebuildRingMesh();
     };
     img.onerror = () => {
