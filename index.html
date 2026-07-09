@@ -378,7 +378,7 @@ function initThree() {
   threeReady = true;
 
   scene = new THREE.Scene();
-  renderer3 = new THREE.WebGLRenderer({ canvas: els.overlay, alpha: true, antialias: true });
+  renderer3 = new THREE.WebGLRenderer({ canvas: els.overlay, alpha: true, antialias: true, preserveDrawingBuffer: true });
   renderer3.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.85));
