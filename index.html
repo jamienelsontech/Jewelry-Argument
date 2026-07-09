@@ -21,7 +21,7 @@
 
   #stage { position: relative; width: 100%; height: 100dvh; overflow: hidden; background: #0a0a0b; }
   #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
-  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: block; }
 
   .screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px; }
   .hidden { display: none !important; }
@@ -136,55 +136,59 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
 // ---- Real Classique Jewelry catalog ----
+// metal/gem colors are auto-extracted from each photo below; these are
+// fallbacks used only if extraction fails (e.g. image blocked by CORS).
 const RINGS = [
   {
     name: 'Diamond & Oval Emerald Halo',
     price: '$718.49',
     image: 'https://cdn.shopify.com/s/files/1/0643/0244/8820/files/RM5757-EM-010-YA.jpg?v=1751476044',
     url: 'https://classiquejewelryinc.com/products/14k-diamond-and-oval-emerald-halo-ring14k-yellow-gold',
-    tint: '#3f7d5a'
+    fallbackMetal: 0xd8b96a, fallbackGem: 0x2f6d4a
   },
   {
     name: 'Diamond & Ruby Oval Halo',
     price: '$1,638.76',
     image: 'https://cdn.shopify.com/s/files/1/0643/0244/8820/files/RM5759-RU-020-YA.jpg?v=1751476046',
     url: 'https://classiquejewelryinc.com/products/14k-diamond-and-ruby-oval-halo-ring14k-yellow-gold',
-    tint: '#a1273b'
+    fallbackMetal: 0xd8b96a, fallbackGem: 0x9c1f34
   },
   {
     name: 'Diamond & Sapphire Oval Halo',
     price: '$1,589.26',
     image: 'https://cdn.shopify.com/s/files/1/0643/0244/8820/files/RM5759-SA-020-YA.jpg?v=1751476046',
     url: 'https://classiquejewelryinc.com/products/14k-diamond-and-sapphire-oval-halo-ring14k-yellow-gold',
-    tint: '#2c4f8c'
+    fallbackMetal: 0xd8b96a, fallbackGem: 0x24447f
   },
   {
     name: 'Cushion Emerald & Diamond Halo',
     price: '$1,552.95',
     image: 'https://cdn.shopify.com/s/files/1/0643/0244/8820/files/RM7124-EM-021-WA.jpg?v=1751478110',
     url: 'https://classiquejewelryinc.com/products/14k-white-gold-cushion-created-emerald-and-diamond-halo-ring14k-white-gold',
-    tint: '#3f7d5a'
+    fallbackMetal: 0xd7d7db, fallbackGem: 0x2f6d4a
   },
   {
     name: "Men's Diamond Signet",
     price: '$1,411.25',
     image: 'https://cdn.shopify.com/s/files/1/0643/0244/8820/files/RS178AA_7adbec54-c92b-41d6-8ac7-7e003334aacb.jpg?v=1751475449',
     url: 'https://classiquejewelryinc.com/products/14k-100x13-open-back-aa-diamond-mens-signet-ring14k-yellow-gold',
-    tint: '#c9a24a'
+    fallbackMetal: 0xd8b96a, fallbackGem: null
   },
   {
     name: 'Classic Initial Oval Diamond',
     price: '$1,209.98',
     image: 'https://cdn.shopify.com/s/files/1/0643/0244/8820/files/10XNR107Y.jpg?v=1751475363',
     url: 'https://classiquejewelryinc.com/products/10k-yellow-gold-classic-initial-oval-with-diamond-ring10k-yellow-gold',
-    tint: '#c9a24a'
+    fallbackMetal: 0xd8b96a, fallbackGem: 0xdfe6f5
   },
 ];
 
-// ---- State ----
-let phase = 'intro'; // intro | loading | error | live
+// ---- App state ----
+let phase = 'intro';
 let selected = 0;
 let facing = 'environment';
 let handDetected = false;
@@ -192,7 +196,7 @@ let handLandmarker = null;
 let rafId = null;
 let lastTs = -1;
 let captured = null;
-const ringImages = []; // preloaded <img> per ring
+const ringImages = [];
 
 const els = {
   video: document.getElementById('video'),
@@ -217,12 +221,68 @@ const els = {
   shareBtn: document.getElementById('shareBtn'),
 };
 
+// ---- Color extraction: sample each ring's real photo to derive a metal
+// tone and a gem color, so the 3D model reflects the actual product photo
+// rather than a hand-picked palette. ----
+function extractColors(img) {
+  return new Promise((resolve) => {
+    try {
+      const w = 56, h = 56;
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, w, h);
+      const data = ctx.getImageData(0, 0, w, h).data;
+
+      let metalR = 0, metalG = 0, metalB = 0, metalN = 0;
+      let gemR = 0, gemG = 0, gemB = 0, gemN = 0;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+        if (a < 200) continue;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        const lightness = (max + min) / 2;
+        if (lightness > 238 || lightness < 12) continue; // skip bg/shadow
+        const sat = max === min ? 0 : (max - min) / (255 - Math.abs(2 * lightness - 255));
+        if (sat > 0.42 && lightness > 35 && lightness < 215) {
+          gemR += r; gemG += g; gemB += b; gemN++;
+        } else {
+          metalR += r; metalG += g; metalB += b; metalN++;
+        }
+      }
+
+      const metal = metalN
+        ? (Math.round(metalR / metalN) << 16) | (Math.round(metalG / metalN) << 8) | Math.round(metalB / metalN)
+        : null;
+      const gem = gemN > (w * h * 0.008)
+        ? (Math.round(gemR / gemN) << 16) | (Math.round(gemG / gemN) << 8) | Math.round(gemB / gemN)
+        : null;
+      resolve({ metal, gem });
+    } catch (e) {
+      resolve({ metal: null, gem: null });
+    }
+  });
+}
+
 function preloadRingImages() {
   RINGS.forEach((r, i) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
+    img.onload = async () => {
+      const { metal, gem } = await extractColors(img);
+      r.metalColor = metal ?? r.fallbackMetal;
+      r.gemColor = gem ?? r.fallbackGem;
+      if (i === selected) rebuildRingMesh();
+    };
+    img.onerror = () => {
+      r.metalColor = r.fallbackMetal;
+      r.gemColor = r.fallbackGem;
+    };
     img.src = r.image;
     ringImages[i] = img;
+    // fallback in case extraction is slow/fails silently
+    r.metalColor = r.fallbackMetal;
+    r.gemColor = r.fallbackGem;
   });
 }
 preloadRingImages();
@@ -243,6 +303,7 @@ function renderCatalog() {
 function selectRing(i) {
   selected = i;
   renderCatalog();
+  rebuildRingMesh();
 }
 
 function setPhase(p) {
@@ -284,6 +345,7 @@ async function openCamera() {
 async function start() {
   setPhase('loading');
   try {
+    initThree();
     await loadModel();
     await openCamera();
     setPhase('live');
@@ -305,18 +367,96 @@ async function flip() {
   try { await openCamera(); } catch (e) {}
 }
 
+// ---- Three.js 3D ring ----
+let scene, camera3, renderer3, ringGroup, bandMesh, gemMesh;
+let threeReady = false;
+
+function initThree() {
+  if (threeReady) return;
+  threeReady = true;
+
+  scene = new THREE.Scene();
+  renderer3 = new THREE.WebGLRenderer({ canvas: els.overlay, alpha: true, antialias: true });
+  renderer3.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+  const key = new THREE.DirectionalLight(0xffffff, 1.0);
+  key.position.set(150, -250, 400);
+  scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+  fill.position.set(-150, 200, -150);
+  scene.add(fill);
+  const rim = new THREE.PointLight(0xfff4dd, 0.6, 0, 2);
+  rim.position.set(0, -100, 200);
+  scene.add(rim);
+
+  ringGroup = new THREE.Group();
+  scene.add(ringGroup);
+
+  rebuildRingMesh();
+  resizeThree();
+}
+
+function rebuildRingMesh() {
+  if (!ringGroup) return;
+  while (ringGroup.children.length) {
+    const c = ringGroup.children.pop();
+    c.geometry?.dispose();
+    c.material?.dispose();
+  }
+
+  const ring = RINGS[selected];
+  const metalColor = ring.metalColor ?? ring.fallbackMetal ?? 0xd8b96a;
+  const gemColor = ring.gemColor ?? ring.fallbackGem;
+
+  const bandGeo = new THREE.TorusGeometry(1, 0.34, 40, 72);
+  const bandMat = new THREE.MeshStandardMaterial({
+    color: metalColor, metalness: 0.92, roughness: 0.25,
+  });
+  bandMesh = new THREE.Mesh(bandGeo, bandMat);
+  ringGroup.add(bandMesh);
+
+  if (gemColor != null) {
+    const gemGeo = new THREE.OctahedronGeometry(0.46, 0);
+    const gemMat = new THREE.MeshPhysicalMaterial({
+      color: gemColor, metalness: 0, roughness: 0.05,
+      transmission: 0.55, thickness: 0.6, clearcoat: 1, clearcoatRoughness: 0.05,
+      ior: 1.9, envMapIntensity: 1.2,
+    });
+    gemMesh = new THREE.Mesh(gemGeo, gemMat);
+    gemMesh.position.set(0, 1.08, 0);
+    gemMesh.scale.set(1, 0.7, 0.55);
+    ringGroup.add(gemMesh);
+
+    // Small prong accents around the gem base
+    const prongMat = new THREE.MeshStandardMaterial({ color: metalColor, metalness: 0.9, roughness: 0.3 });
+    for (let i = 0; i < 4; i++) {
+      const ang = (Math.PI / 2) * i + Math.PI / 4;
+      const prong = new THREE.Mesh(new THREE.SphereGeometry(0.08, 10, 10), prongMat);
+      prong.position.set(Math.cos(ang) * 0.34, 1.0, Math.sin(ang) * 0.26);
+      ringGroup.add(prong);
+    }
+  }
+}
+
+let lastW = 0, lastH = 0;
+function resizeThree() {
+  const rect = els.overlay.getBoundingClientRect();
+  const w = Math.max(1, rect.width), h = Math.max(1, rect.height);
+  if (w === lastW && h === lastH) return;
+  lastW = w; lastH = h;
+  renderer3.setSize(w, h, false);
+  camera3 = new THREE.OrthographicCamera(0, w, 0, h, -2000, 2000);
+  camera3.position.z = 1000;
+}
+
 function loop() {
   rafId = requestAnimationFrame(loop);
-  const v = els.video, c = els.overlay;
-  if (!v || !c || !handLandmarker || v.readyState < 2 || !v.videoWidth) return;
+  const v = els.video;
+  if (!v || !handLandmarker || v.readyState < 2 || !v.videoWidth) return;
 
-  const rect = c.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const pw = Math.round(rect.width * dpr), ph = Math.round(rect.height * dpr);
-  if (c.width !== pw || c.height !== ph) { c.width = pw; c.height = ph; }
-  const ctx = c.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, rect.width, rect.height);
+  resizeThree();
+  const rect = els.overlay.getBoundingClientRect();
 
   let ts = performance.now();
   if (ts <= lastTs) ts = lastTs + 1;
@@ -330,77 +470,44 @@ function loop() {
     handDetected = detected;
     els.handHint.style.display = (phase === 'live' && !handDetected) ? 'flex' : 'none';
   }
-  if (!detected) return;
 
-  const vw = v.videoWidth, vh = v.videoHeight, rw = rect.width, rh = rect.height;
-  const scale = Math.max(rw / vw, rh / vh);
-  const dw = vw * scale, dh = vh * scale;
-  const ox = (rw - dw) / 2, oy = (rh - dh) / 2;
-  const mirror = facing === 'user';
-  const map = (p) => ({ x: (mirror ? (1 - p.x) : p.x) * dw + ox, y: p.y * dh + oy });
+  if (detected) {
+    const vw = v.videoWidth, vh = v.videoHeight, rw = rect.width, rh = rect.height;
+    const scale = Math.max(rw / vw, rh / vh);
+    const dw = vw * scale, dh = vh * scale;
+    const ox = (rw - dw) / 2, oy = (rh - dh) / 2;
+    const mirror = facing === 'user';
+    const map = (p) => ({ x: (mirror ? (1 - p.x) : p.x) * dw + ox, y: p.y * dh + oy });
 
-  drawRing(ctx, hands[0], map);
+    updateRingTransform(hands[0], map);
+    ringGroup.visible = true;
+  } else {
+    ringGroup.visible = false;
+  }
+
+  renderer3.render(scene, camera3);
 }
 
-function drawRing(ctx, lm, map) {
-  const ring = RINGS[selected];
-  const img = ringImages[selected];
+function updateRingTransform(lm, map) {
   const mcp = map(lm[13]), pip = map(lm[14]);
   const midMcp = map(lm[9]);
   const pos = { x: mcp.x + (pip.x - mcp.x) * 0.42, y: mcp.y + (pip.y - mcp.y) * 0.42 };
   const angle = Math.atan2(pip.y - mcp.y, pip.x - mcp.x);
   const gap = Math.hypot(mcp.x - midMcp.x, mcp.y - midMcp.y);
   const band = Math.max(20, gap * 1.3);
-  const rx = band * 0.55;
-  const ry = band * 0.55;
-  const innerRx = rx * 0.6;
-  const innerRy = ry * 0.6;
 
-  ctx.save();
-  ctx.translate(pos.x, pos.y);
-  ctx.rotate(angle + Math.PI / 2);
+  ringGroup.position.set(pos.x, pos.y, 0);
 
-  // Clip to an ANNULUS (outer ellipse minus inner ellipse) so the band
-  // reads as an actual ring -- the finger shows through the hole in the
-  // middle, and there's no white background since nothing is filled
-  // outside the clip region.
-  ctx.save();
-  ctx.beginPath();
-  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-  ctx.ellipse(0, 0, innerRx, innerRy, 0, 0, Math.PI * 2);
-  ctx.clip('evenodd');
-  if (img && img.complete && img.naturalWidth) {
-    const iw = img.naturalWidth, ih = img.naturalHeight;
-    const s = Math.max((rx * 2) / iw, (ry * 2) / ih);
-    const dw2 = iw * s, dh2 = ih * s;
-    ctx.drawImage(img, -dw2 / 2, -dh2 / 2, dw2, dh2);
-  } else {
-    ctx.fillStyle = ring.tint;
-    ctx.fillRect(-rx, -ry, rx * 2, ry * 2);
-  }
-  ctx.restore();
+  // Compose rotation: tilt the torus face so it reads as a band wrapping
+  // a cylindrical finger (local X tilt), then rotate that tilted ring
+  // around the screen Z axis to align with the finger's direction.
+  const tiltRad = THREE.MathUtils.degToRad(76);
+  const qTilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), tiltRad);
+  const qAlign = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle + Math.PI / 2);
+  ringGroup.quaternion.copy(qAlign).multiply(qTilt);
 
-  // Ring edge + subtle shading for depth (outer and inner edges)
-  ctx.beginPath();
-  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-  ctx.lineWidth = Math.max(1, band * 0.03);
-  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.ellipse(0, 0, innerRx, innerRy, 0, 0, Math.PI * 2);
-  ctx.lineWidth = Math.max(1, band * 0.02);
-  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-  ctx.stroke();
-
-  const shine = ctx.createRadialGradient(-rx * 0.3, -ry * 0.3, band * 0.05, 0, 0, rx);
-  shine.addColorStop(0, 'rgba(255,255,255,0.35)');
-  shine.addColorStop(0.4, 'rgba(255,255,255,0)');
-  ctx.beginPath();
-  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-  ctx.fillStyle = shine;
-  ctx.fill();
-
-  ctx.restore();
+  const scale = band * 0.62;
+  ringGroup.scale.set(scale, scale, scale);
 }
 
 function capture() {
@@ -459,6 +566,7 @@ els.captureBtn.addEventListener('click', capture);
 els.retakeBtn.addEventListener('click', closeCapture);
 els.saveBtn.addEventListener('click', downloadCapture);
 els.shareBtn.addEventListener('click', shareCapture);
+window.addEventListener('resize', () => { if (threeReady) resizeThree(); });
 
 window.addEventListener('beforeunload', () => {
   if (rafId) cancelAnimationFrame(rafId);
